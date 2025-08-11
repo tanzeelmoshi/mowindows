@@ -46,20 +46,73 @@ GROQ_MODELS = [
 ]
 GROQ_MODEL_DEFAULT = "llama-3.3-70b-versatile"
 
+def extract_name_from_content(content):
+    """Extract name from LinkedIn post content using Groq API"""
+    prompt = f"""
+Extract the person's name from this LinkedIn post content. Look for:
+1. Author name
+2. Person mentioned in the post
+3. Profile name
+4. Any clear name references
+
+Return ONLY a JSON object with key "name" and the extracted name as value. If no clear name is found, return {{"name": "there"}}.
+
+LinkedIn Post Content:
+{content}
+"""
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    model = st.session_state.get("groq_model", GROQ_MODEL_DEFAULT)
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant that extracts names from text."},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 100,
+        "temperature": 0.3
+    }
+    try:
+        response = requests.post(GROQ_API_URL, headers=headers, json=data, timeout=30)
+        response.raise_for_status()
+        try:
+            result = response.json()
+            import json as pyjson
+            text = result['choices'][0]['message']['content']
+            text = re.sub(r"^(```json|```|json)\\s*", "", text.strip(), flags=re.IGNORECASE)
+            text = text.strip('`\n ')
+            parsed = pyjson.loads(text)
+            return parsed.get('name', 'there')
+        except Exception:
+            return 'there'
+    except Exception:
+        return 'there'
+
 def call_groq_api(email, content):
     # Structured, concise prompt for Moshi Moshi outreach, enforce brevity and JSON
     prompt = f"""
-You are Tanzeel, a sales guy from Moshi Moshi, a branding and consultancy agency in Bangalore. Write a personalized outreach email in just 3 sentences based on the following full raw LinkedIn post content:
-1. Appreciate their work/post.
-2. Find the pain point of the person or company.
-3. Prepare a call-to-action (CTA) for how Moshi Moshi can help them.
+You are Anusha, a sales person from Moshi Moshi, a branding and consultancy agency in Bangalore. Write a personalized outreach email based on the following LinkedIn post content.
+
+Use this EXACT email format:
+
+Well, that's how we say hello. Hope you are doing great!
+
+Just a quick intro about Moshi Moshi — we're a Bangalore-headquartered communication company with offices in Mumbai and Gurgaon, working at the intersection of design, digital, content, and code — turning brand goals into sharp strategies, clean visuals, and campaigns that don't just look good, but actually connect with the right audience.
+
+Over the last 10 years, we haven't just worked on major launches, legacy rebrands, or brand campaigns that grabbed attention — we've steadily become long-term partners to many businesses, including several in your space, supporting them from brand creation all the way to customer acquisition. That's where both our clients and we see real value.
+
+[ADD A PERSONALIZED PARAGRAPH HERE based on the LinkedIn content - mention their specific need/pain point and how Moshi Moshi can help them specifically]
+
+Attaching a few relevant projects from your space (and a few others), along with a quick proposal. Let us know a good time this week — we'd love to walk you through our approach.
 
 Respond ONLY in valid JSON with keys: subject, body.
-- Subject: Max 10 words, catchy and relevant.
-- Body: 3 sentences as above, friendly, direct, and actionable.
+- Subject: Max 10 words, catchy and relevant to their specific need.
+- Body: Use the exact format above, only customize the personalized paragraph based on their LinkedIn content.
 - Do NOT include any explanations, the word 'json', code blocks, or any extra text. Respond with ONLY the raw JSON object.
 
-Full Raw LinkedIn Post Content:
+LinkedIn Post Content:
 {content}
 """
     headers = {
@@ -108,8 +161,81 @@ Full Raw LinkedIn Post Content:
         st.write("Groq raw response:", getattr(e, 'response', None) and e.response.text or str(e))
         return "[Groq error]", "[Groq error]"
 
+def call_openai_api(email, content, api_key):
+    """Call OpenAI API for email generation"""
+    if not api_key:
+        return "[OpenAI error]", "[OpenAI error - No API key]"
+    
+    prompt = f"""
+You are Anusha, a sales person from Moshi Moshi, a branding and consultancy agency in Bangalore. Write a personalized outreach email based on the following LinkedIn post content.
+
+Use this EXACT email format:
+
+Well, that's how we say hello. Hope you are doing great!
+
+Just a quick intro about Moshi Moshi — we're a Bangalore-headquartered communication company with offices in Mumbai and Gurgaon, working at the intersection of design, digital, content, and code — turning brand goals into sharp strategies, clean visuals, and campaigns that don't just look good, but actually connect with the right audience.
+
+Over the last 10 years, we haven't just worked on major launches, legacy rebrands, or brand campaigns that grabbed attention — we've steadily become long-term partners to many businesses, including your space, supporting them from brand creation all the way to customer acquisition. That's where both our clients and we see real value.
+
+[ADD A PERSONALIZED PARAGRAPH HERE based on the LinkedIn content - mention their specific need/pain point and how Moshi Moshi can help them specifically]
+
+Attaching a few relevant projects from your space (and a few others), along with a quick proposal. Let us know a good time this week — we'd love to walk you through our approach.
+
+Respond ONLY in valid JSON with keys: subject, body.
+- Subject: Max 10 words, catchy and relevant to their specific need.
+- Body: Use the exact format above, only customize the personalized paragraph based on their LinkedIn content.
+- Do NOT include any explanations, the word 'json', code blocks, or any extra text. Respond with ONLY the raw JSON object.
+
+LinkedIn Post Content:
+{content}
+"""
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 512,
+        "temperature": 0.7
+    }
+    
+    try:
+        response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data, timeout=30)
+        log_debug(f"[OPENAI DEBUG] Status code: {response.status_code}")
+        log_debug(f"[OPENAI DEBUG] Response text: {response.text}")
+        response.raise_for_status()
+        
+        try:
+            result = response.json()
+            import json as pyjson
+            text = result['choices'][0]['message']['content']
+            # Post-process: strip leading 'json', code block markers, and whitespace
+            import re
+            text = re.sub(r"^(```json|```|json)\\s*", "", text.strip(), flags=re.IGNORECASE)
+            text = text.strip('`\n ')
+            parsed = pyjson.loads(text)
+            return parsed.get('subject', ''), parsed.get('body', '')
+        except Exception as json_e:
+            log_debug(f"[OPENAI JSON ERROR] {json_e}")
+            log_debug(f"[OPENAI JSON ERROR] Raw response: {response.text}")
+            return "[OpenAI error]", "[OpenAI error]"
+    except Exception as e:
+        log_debug(f"[OPENAI ERROR] {e}")
+        try:
+            if hasattr(e, 'response') and e.response is not None:
+                log_debug(f"[OPENAI ERROR RESPONSE] {e.response.text}")
+        except Exception:
+            pass
+        return "[OpenAI error]", "[OpenAI error]"
+
 # --- SMTP Email Sending Module ---
-def send_email_smtp(sender_email, sender_password, recipient_email, subject, body, sender_name="Tanzeel from Moshi Moshi"):
+def send_email_smtp(sender_email, sender_password, recipient_email, subject, body, sender_name="Anusha from Moshi Moshi"):
     """
     Send email using Gmail SMTP server
     
@@ -125,6 +251,27 @@ def send_email_smtp(sender_email, sender_password, recipient_email, subject, bod
         tuple: (success: bool, message: str)
     """
     try:
+        # Check if body already contains regards section
+        if "Best regards," in body or "Moshi Moshi Communications" in body:
+            # Body already has regards, use as is
+            full_body = body
+        else:
+            # Add hardcoded regards section to the body
+            regards_section = f"""
+
+Check out our portfolio: https://drive.google.com/file/d/1zaK36IRSEWesf2ccPudco_G6fdPD2YYN/view?usp=sharing
+        
+Best regards,
+Anusha
+Moshi Moshi Communications Ltd.
+Bangalore
+
++91 91485 44178
+www.moshimoshi.in
+"""
+            # Combine body with regards
+            full_body = body + regards_section
+        
         # Create message
         msg = MIMEMultipart()
         msg['From'] = f"{sender_name} <{sender_email}>"
@@ -132,7 +279,7 @@ def send_email_smtp(sender_email, sender_password, recipient_email, subject, bod
         msg['Subject'] = subject
         
         # Add body to email
-        msg.attach(MIMEText(body, 'plain'))
+        msg.attach(MIMEText(full_body, 'plain'))
         
         # Gmail SMTP configuration
         smtp_server = "smtp.gmail.com"
@@ -161,7 +308,7 @@ def send_email_smtp(sender_email, sender_password, recipient_email, subject, bod
         log_debug(f"[EMAIL ERROR] {error_msg}")
         return False, error_msg
 
-def send_bulk_emails(sender_email, sender_password, email_data, delay_seconds=2.0, sender_name="Tanzeel from Moshi Moshi"):
+def send_bulk_emails(sender_email, sender_password, email_data, delay_seconds=2.0, sender_name="Anusha from Moshi Moshi"):
     """
     Send multiple emails with progress tracking
     
@@ -952,6 +1099,7 @@ if scrape_mode == "Scrape by Posts/Keywords":
             try:
                 posts_collected = 0
                 seen_posts = set()
+                all_page_posts = []  # Initialize the list for this keyword's posts
                 max_scrolls = 20 if not fast_mode else 10
                 search_url = f"https://www.linkedin.com/search/results/content/?keywords={kw.replace(' ', '%20')}&sortBy=date_posted"
                 try:
@@ -1124,7 +1272,7 @@ elif scrape_mode == "Scrape by Emails (lead mode)":
             value="looking for designer\nneed developer\nseeking marketing help")
         num_emails = st.number_input("Number of unique emails to collect", min_value=1, max_value=1000, value=10)
         delay = st.slider("Delay between actions (seconds)", 1, 10, 2)
-        time_limit = st.slider("Max scraping time (seconds)", min_value=10, max_value=1200, value=300, step=10)
+        time_limit = st.slider("Max scraping time (seconds)", min_value=10, max_value=360000, value=300, step=10)
         max_scrolls_per_keyword = st.slider("Max scrolls per keyword", min_value=3, max_value=30, value=10, step=1)
         fast_mode = False
         parallel_fast_mode = False
@@ -1397,14 +1545,61 @@ if not df.empty:
         for i, row in df.iterrows():
             email = row.get('email', '') if 'email' in row else ''
             context_content = row.get('raw_content', '') or row.get('content', '')
+            
+            # Extract name from content using LLM
+            progress_bar.progress((i+0.3)/total, text=f"Extracting name for {i+1}/{total}")
+            extracted_name = extract_name_from_content(context_content)
+            
+            # Create greeting
+            greeting = f"Moshi moshi {extracted_name}!"
+            
             prompt_content = f"""
-You are a sales representative from Moshi Moshi, a branding and consultancy agency in Bangalore. Write a personalized outreach email based on the following full raw LinkedIn post content.\n\nRespond ONLY in valid JSON with keys: subject, body.\n- Subject: Max 10 words, catchy and relevant.\n- Body: Max 40 words, friendly, direct, and actionable.\n- Do NOT include any explanations or extra text.\n\nFull Raw LinkedIn Post Content:\n{context_content}
+You are Anusha, a sales person from Moshi Moshi, a branding and consultancy agency in Bangalore. Write a personalized outreach email based on the following LinkedIn post content.
+
+Use this EXACT email format:
+
+Well, that's how we say hello. Hope you are doing great!
+
+Just a quick intro about Moshi Moshi — we're a Bangalore-headquartered communication company with offices in Mumbai and Gurgaon, working at the intersection of design, digital, content, and code — turning brand goals into sharp strategies, clean visuals, and campaigns that don't just look good, but actually connect with the right audience.
+
+Over the last 10 years, we haven't just worked on major launches, legacy rebrands, or brand campaigns that grabbed attention — we've steadily become long-term partners to many businesses, including several and your space space, supporting them from brand creation all the way to customer acquisition. That's where both our clients and we see real value.
+
+[ADD A PERSONALIZED PARAGRAPH HERE based on the LinkedIn content - mention their specific need/pain point and how Moshi Moshi can help them specifically]
+
+Attaching a few relevant projects from your space (and a few others), along with a quick proposal. Let us know a good time this week — we'd love to walk you through our approach.
+
+Respond ONLY in valid JSON with keys: subject, body.
+- Subject: Max 10 words, catchy and relevant to their specific need.
+- Body: Use the exact format above, only customize the personalized paragraph based on their LinkedIn content.
+
+LinkedIn Post Content:
+{context_content}
 """
+            progress_bar.progress((i+0.6)/total, text=f"Generating email for {i+1}/{total}")
             subject, body, llm_error = generate_email_with_retries(email, prompt_content, llm_func, max_retries=3, delay=llm_delay, cooldown_callback=cooldown_callback)
+            
+            # Combine greeting with body and regards
+            regards_section = f"""
+
+Check out our portfolio: https://drive.google.com/file/d/1zaK36IRSEWesf2ccPudco_G6fdPD2YYN/view?usp=sharing
+        
+Best regards,
+Anusha
+Moshi Moshi Communications Ltd.
+Bangalore
+
++91 91485 44178
+www.moshimoshi.in"""
+            
+            full_body = greeting + "\n\n" + body + regards_section
+            
             result_row = {
                 'email': email,
+                'extracted_name': extracted_name,
+                'greetings': greeting,
                 'subject': subject,
                 'body': body,
+                'full_body': full_body,
                 'llm_error': llm_error
             }
             for col in EXPECTED_COLS:
@@ -1433,7 +1628,7 @@ You are a sales representative from Moshi Moshi, a branding and consultancy agen
             col1, col2 = st.columns([1, 1])
             
             with col1:
-                sender_name = st.text_input("Sender Name", value="Tanzeel from Moshi Moshi", key="sender_name_personalized")
+                sender_name = st.text_input("Sender Name", value="Anusha from Moshi Moshi", key="sender_name_personalized")
                 email_delay = st.slider("Delay between emails (seconds)", min_value=1.0, max_value=10.0, value=2.0, step=0.5, key="email_delay_personalized")
             
             with col2:
@@ -1442,7 +1637,8 @@ You are a sales representative from Moshi Moshi, a branding and consultancy agen
                     (st.session_state["personalized_results"]['email'].notna()) & 
                     (st.session_state["personalized_results"]['email'] != '') &
                     (st.session_state["personalized_results"]['subject'].notna()) &
-                    (st.session_state["personalized_results"]['body'].notna())
+                    ((st.session_state["personalized_results"]['full_body'].notna()) |
+                     (st.session_state["personalized_results"]['body'].notna()))
                 ]
                 
                 st.info(f"📊 {len(valid_emails)} emails ready to send out of {len(st.session_state['personalized_results'])} total")
@@ -1452,10 +1648,36 @@ You are a sales representative from Moshi Moshi, a branding and consultancy agen
                     # Prepare email data
                     email_data = []
                     for _, row in valid_emails.iterrows():
+                        # Priority: full_body > greetings + body + regards > body only
+                        if 'full_body' in row and row.get('full_body') and str(row.get('full_body')).strip():
+                            # Use the complete full_body if available
+                            email_body = str(row.get('full_body'))
+                        elif 'greetings' in row and row.get('greetings'):
+                            # Construct from greeting + body + regards
+                            greeting = str(row.get('greetings', ''))
+                            body_content = str(row.get('body', ''))
+                            
+                            regards_section = f"""
+
+Check out our portfolio: https://drive.google.com/file/d/1zaK36IRSEWesf2ccPudco_G6fdPD2YYN/view?usp=sharing
+        
+Best regards,
+Anusha
+Moshi Moshi Communications Ltd.
+Bangalore
+
++91 91485 44178
+www.moshimoshi.in"""
+                            
+                            email_body = greeting + "\n\n" + body_content + regards_section
+                        else:
+                            # Fallback to just body
+                            email_body = str(row.get('body', ''))
+                        
                         email_data.append({
                             'email': row['email'],
                             'subject': row['subject'],
-                            'body': row['body']
+                            'body': email_body
                         })
                     
                     # Send emails
@@ -1513,13 +1735,60 @@ if uploaded_csv is not None:
             for i, row in user_df.iterrows():
                 email = row.get('email', '') if 'email' in row else ''
                 context_content = row.get('raw_content', '') or row.get('content', '')
+                
+                # Extract name from content using LLM
+                progress_bar.progress((i+0.3)/total, text=f"Extracting name for {i+1}/{total}")
+                extracted_name = extract_name_from_content(context_content)
+                
+                # Create greeting
+                greeting = f"Moshi moshi {extracted_name}!"
+                
                 prompt_content = f"""
-You are a sales representative from Moshi Moshi, a branding and consultancy agency in Bangalore. Write a personalized outreach email based on the following full raw LinkedIn post content.\n\nRespond ONLY in valid JSON with keys: subject, body.\n- Subject: Max 10 words, catchy and relevant.\n- Body: Max 40 words, friendly, direct, and actionable.\n- Do NOT include any explanations or extra text.\n\nFull Raw LinkedIn Post Content:\n{context_content}
+You are Anusha, a sales person from Moshi Moshi, a branding and consultancy agency in Bangalore. Write a personalized outreach email based on the following LinkedIn post content.
+
+Use this EXACT email format:
+
+Well, that's how we say hello. Hope you are doing great!
+
+Just a quick intro about Moshi Moshi — we're a Bangalore-headquartered communication company with offices in Mumbai and Gurgaon, working at the intersection of design, digital, content, and code — turning brand goals into sharp strategies, clean visuals, and campaigns that don't just look good, but actually connect with the right audience.
+
+Over the last 10 years, we haven't just worked on major launches, legacy rebrands, or brand campaigns that grabbed attention — we've steadily become long-term partners to many businesses, including several and in your space, supporting them from brand creation all the way to customer acquisition. That's where both our clients and we see real value.
+
+[ADD A PERSONALIZED PARAGRAPH HERE based on the LinkedIn content - mention their specific need/pain point and how Moshi Moshi can help them specifically]
+
+Attaching a few relevant projects from your space (and a few others), along with a quick proposal. Let us know a good time this week — we'd love to walk you through our approach.
+
+Respond ONLY in valid JSON with keys: subject, body.
+- Subject: Max 10 words, catchy and relevant to their specific need.
+- Body: Use the exact format above, only customize the personalized paragraph based on their LinkedIn content.
+
+LinkedIn Post Content:
+{context_content}
 """
+                progress_bar.progress((i+0.6)/total, text=f"Generating email for {i+1}/{total}")
                 subject, body, llm_error = generate_email_with_retries(email, prompt_content, llm_func, max_retries=3, delay=llm_delay)
+                
+                # Combine greeting with body and regards
+                regards_section = f"""
+
+Check out our portfolio: https://drive.google.com/file/d/1zaK36IRSEWesf2ccPudco_G6fdPD2YYN/view?usp=sharing
+        
+Best regards,
+Anusha
+Moshi Moshi Communications Ltd.
+Bangalore
+
++91 91485 44178
+www.moshimoshi.in"""
+                
+                full_body = greeting + "\n\n" + body + regards_section
+                
                 result_row = dict(row)
+                result_row['extracted_name'] = extracted_name
+                result_row['greetings'] = greeting
                 result_row['subject'] = subject
                 result_row['body'] = body
+                result_row['full_body'] = full_body
                 result_row['llm_error'] = llm_error
                 personalized_rows.append(result_row)
                 progress_bar.progress((i+1)/total, text=f"{i+1}/{total} emails generated")
@@ -1544,7 +1813,7 @@ You are a sales representative from Moshi Moshi, a branding and consultancy agen
                 col1, col2 = st.columns([1, 1])
                 
                 with col1:
-                    sender_name = st.text_input("Sender Name", value="Tanzeel from Moshi Moshi", key="sender_name_upload")
+                    sender_name = st.text_input("Sender Name", value="Anusha from Moshi Moshi", key="sender_name_upload")
                     email_delay = st.slider("Delay between emails (seconds)", min_value=1.0, max_value=10.0, value=2.0, step=0.5, key="email_delay_upload")
                 
                 with col2:
@@ -1553,7 +1822,8 @@ You are a sales representative from Moshi Moshi, a branding and consultancy agen
                         (st.session_state["personalized_upload_results"]['email'].notna()) & 
                         (st.session_state["personalized_upload_results"]['email'] != '') &
                         (st.session_state["personalized_upload_results"]['subject'].notna()) &
-                        (st.session_state["personalized_upload_results"]['body'].notna())
+                        ((st.session_state["personalized_upload_results"]['full_body'].notna()) |
+                         (st.session_state["personalized_upload_results"]['body'].notna()))
                     ]
                     
                     st.info(f"📊 {len(valid_emails)} emails ready to send out of {len(st.session_state['personalized_upload_results'])} total")
@@ -1563,10 +1833,36 @@ You are a sales representative from Moshi Moshi, a branding and consultancy agen
                         # Prepare email data
                         email_data = []
                         for _, row in valid_emails.iterrows():
+                            # Priority: full_body > greetings + body + regards > body only
+                            if 'full_body' in row and row.get('full_body') and str(row.get('full_body')).strip():
+                                # Use the complete full_body if available
+                                email_body = str(row.get('full_body'))
+                            elif 'greetings' in row and row.get('greetings'):
+                                # Construct from greeting + body + regards
+                                greeting = str(row.get('greetings', ''))
+                                body_content = str(row.get('body', ''))
+                                
+                                regards_section = f"""
+
+Check out our portfolio: https://drive.google.com/file/d/1zaK36IRSEWesf2ccPudco_G6fdPD2YYN/view?usp=sharing
+        
+Best regards,
+Anusha
+Moshi Moshi Communications Ltd.
+Bangalore
+
++91 91485 44178
+www.moshimoshi.in"""
+                                
+                                email_body = greeting + "\n\n" + body_content + regards_section
+                            else:
+                                # Fallback to just body
+                                email_body = str(row.get('body', ''))
+                            
                             email_data.append({
                                 'email': row['email'],
                                 'subject': row['subject'],
-                                'body': row['body']
+                                'body': email_body
                             })
                         
                         # Send emails
@@ -1629,13 +1925,23 @@ if email_csv is not None:
                 col1, col2 = st.columns([1, 1])
                 
                 with col1:
-                    sender_name_csv = st.text_input("Sender Name", value="Tanzeel from Moshi Moshi", key="sender_name_csv")
+                    sender_name_csv = st.text_input("Sender Name", value="Anusha from Moshi Moshi", key="sender_name_csv")
                     email_delay_csv = st.slider("Delay between emails (seconds)", min_value=1.0, max_value=10.0, value=2.0, step=0.5, key="email_delay_csv")
                 
                 with col2:
                     # Default subject and body if not in CSV
-                    default_subject = st.text_input("Default Subject (if not in CSV)", value="Hello from Moshi Moshi", key="default_subject_csv")
-                    default_body = st.text_area("Default Body (if not in CSV)", value="Thank you for connecting! We'd love to discuss how Moshi Moshi can help with your branding needs.", key="default_body_csv")
+                    default_subject = st.text_input("Default Subject (if not in CSV)", value="Partnership Opportunity with Moshi Moshi", key="default_subject_csv")
+                    default_body = st.text_area("Default Body (if not in CSV)", 
+                        value="""Well, that's how we say hello. Hope you are doing great!
+
+Just a quick intro about Moshi Moshi — we're a Bangalore-headquartered communication company with offices in Mumbai and Gurgaon, working at the intersection of design, digital, content, and code — turning brand goals into sharp strategies, clean visuals, and campaigns that don't just look good, but actually connect with the right audience.
+
+Over the last 10 years, we haven't just worked on major launches, legacy rebrands, or brand campaigns that grabbed attention — we've steadily become long-term partners to many businesses, including several in your space, supporting them from brand creation all the way to customer acquisition. That's where both our clients and we see real value.
+
+We'd love to explore how we can support your business goals and help you connect with the right audience.
+
+Attaching a few relevant projects from your space (and a few others), along with a quick proposal. Let us know a good time this week — we'd love to walk you through our approach.""", 
+                        key="default_body_csv", height=200)
                 
                 # Filter valid emails
                 valid_email_df = email_df[email_df['email'].notna() & (email_df['email'] != '')]
@@ -1645,11 +1951,20 @@ if email_csv is not None:
                 # Preview email data that will be sent
                 if st.checkbox("Preview email data to be sent", key="preview_csv_emails"):
                     preview_data = []
+                    show_with_greetings = st.checkbox("Preview with Moshi moshi greetings (if content column exists)", key="preview_greetings")
+                    
                     for _, row in valid_email_df.head(5).iterrows():
+                        email_body = row.get('body', default_body)
+                        
+                        if show_with_greetings and 'content' in row and row.get('content', ''):
+                            # Extract name for preview (simplified - just use "Friend" for preview)
+                            greeting = "Moshi moshi Friend!"
+                            email_body = greeting + "\n\n" + email_body + "\n\n[...regards section...]"
+                        
                         preview_data.append({
                             'email': row['email'],
                             'subject': row.get('subject', default_subject),
-                            'body': row.get('body', default_body)[:100] + '...' if len(str(row.get('body', default_body))) > 100 else row.get('body', default_body)
+                            'body': email_body[:150] + '...' if len(str(email_body)) > 150 else email_body
                         })
                     
                     st.dataframe(pd.DataFrame(preview_data), use_container_width=True)
@@ -1658,15 +1973,86 @@ if email_csv is not None:
                 
                 # Send emails button
                 if len(valid_email_df) > 0:
+                    # Add option to extract names and create personalized greetings
+                    use_name_extraction = st.checkbox("🤖 Extract names and add 'Moshi moshi' greetings (requires content column)", key="use_name_extraction_csv")
+                    
+                    if use_name_extraction and 'content' not in email_df.columns:
+                        st.warning("⚠️ Name extraction requires a 'content' column in your CSV file.")
+                        use_name_extraction = False
+                    
                     if st.button("🚀 Send All Emails from CSV", key="send_csv_emails"):
-                        # Prepare email data
+                        # Prepare email data with optional name extraction
                         email_data = []
-                        for _, row in valid_email_df.iterrows():
+                        progress_bar = st.progress(0.0, text="Preparing emails...")
+                        
+                        for i, row in valid_email_df.iterrows():
+                            email_subject = row.get('subject', default_subject)
+                            
+                            # Check if we already have a greetings column
+                            if 'greetings' in row and row.get('greetings'):
+                                # Use existing greeting from the dataframe
+                                greeting = row.get('greetings')
+                                email_body = row.get('body', default_body)
+                                
+                                # Combine greeting + body + regards
+                                regards_section = f"""
+
+Check out our portfolio: https://drive.google.com/file/d/1zaK36IRSEWesf2ccPudco_G6fdPD2YYN/view?usp=sharing
+        
+Best regards,
+Anusha
+Moshi Moshi Communications Ltd.
+Bangalore
+
++91 91485 44178
+www.moshimoshi.in"""
+                                
+                                email_body = greeting + "\n\n" + email_body + regards_section
+                                
+                            elif use_name_extraction and 'content' in row:
+                                # Extract name from content using LLM
+                                progress_bar.progress((i+0.3)/len(valid_email_df), text=f"Extracting name for {i+1}/{len(valid_email_df)}")
+                                content = row.get('content', '')
+                                email_body = row.get('body', default_body)
+                                
+                                if content:
+                                    extracted_name = extract_name_from_content(content)
+                                    
+                                    # Create greeting
+                                    greeting = f"Moshi moshi {extracted_name}!"
+                                    
+                                    # Combine greeting with body and regards
+                                    regards_section = f"""
+
+Check out our portfolio: https://drive.google.com/file/d/1zaK36IRSEWesf2ccPudco_G6fdPD2YYN/view?usp=sharing
+        
+Best regards,
+Anusha
+Moshi Moshi Communications Ltd.
+Bangalore
+
++91 91485 44178
+www.moshimoshi.in"""
+                                    
+                                    email_body = greeting + "\n\n" + email_body + regards_section
+                                else:
+                                    # No content, use default greeting
+                                    greeting = "Moshi moshi there!"
+                                    email_body = greeting + "\n\n" + email_body
+                            else:
+                                # No name extraction, just use body as is
+                                email_body = row.get('body', default_body)
+                            
                             email_data.append({
                                 'email': row['email'],
-                                'subject': row.get('subject', default_subject),
-                                'body': row.get('body', default_body)
+                                'subject': email_subject,
+                                'body': email_body
                             })
+                            
+                            if use_name_extraction:
+                                progress_bar.progress((i+1)/len(valid_email_df), text=f"Prepared {i+1}/{len(valid_email_df)} emails")
+                        
+                        progress_bar.progress(1.0, text="All emails prepared!")
                         
                         # Send emails
                         st.markdown("#### Email Sending Progress")
@@ -1719,15 +2105,19 @@ with st.expander("📋 CSV Format Requirements"):
     - `subject`: Custom subject line for each email
     - `body`: Custom email body for each email
     - `name`: Recipient name (can be used in email body)
+    - `content`: LinkedIn post content or any text content (required for automatic name extraction and personalized greetings)
     
     **Example CSV format:**
     ```
-    email,subject,body,name
-    john@example.com,"Hello John","Hi John, we'd love to connect!",John Doe
-    jane@example.com,"Hello Jane","Hi Jane, let's discuss your project!",Jane Smith
+    email,subject,body,name,content
+    john@example.com,"Hello John","We'd love to connect!",John Doe,"John posted about needing a designer..."
+    jane@example.com,"Hello Jane","Let's discuss your project!",Jane Smith,"Jane is looking for marketing help..."
     ```
     
-    **Note:** If `subject` or `body` columns are missing, the default values you specify above will be used.
+    **Note:** 
+    - If `subject` or `body` columns are missing, the default values you specify above will be used.
+    - If `content` column is present, you can enable automatic name extraction to create personalized "Moshi moshi {name}!" greetings.
+    - The app will use LLM to extract names from the content and create personalized greetings automatically.
     """)
 
 st.markdown("---")
